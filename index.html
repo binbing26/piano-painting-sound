@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>钢琴家的绘画声音装置 (iPad版)</title>
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.4.1/lib/p5.js"></script>
+    <style>
+        body { 
+            margin: 0; 
+            touch-action: none; /* 禁用浏览器默认触摸行为 */
+            background-color: #0a0f1e;
+            overflow: hidden;
+        }
+        canvas { 
+            display: block;
+        }
+        #controls {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(20, 25, 45, 0.8);
+            padding: 10px 20px;
+            border-radius: 30px;
+            display: flex;
+            gap: 15px;
+            backdrop-filter: blur(5px);
+        }
+        .control-btn {
+            width: 50px;
+            height: 50px;
+            border-radius: 25px;
+            border: none;
+            background-color: #3a4c80;
+            color: white;
+            font-size: 18px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            touch-action: manipulation;
+        }
+        .control-btn:hover, .control-btn:active {
+            background-color: #5a70b3;
+        }
+        #info {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-family: "PingFang SC", "Helvetica Neue", sans-serif;
+            background-color: rgba(20, 25, 45, 0.8);
+            padding: 10px 15px;
+            border-radius: 10px;
+            backdrop-filter: blur(5px);
+            max-width: 250px;
+        }
+        #noteDisplay {
+            font-size: 18px;
+            font-weight: bold;
+            margin-top: 5px;
+        }
+        .octave-marker {
+            position: fixed;
+            left: 20px;
+            color: rgba(255, 255, 255, 0.5);
+            font-family: "PingFang SC", "Helvetica Neue", sans-serif;
+            writing-mode: vertical-rl;
+            text-orientation: mixed;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <div>音区: <span id="octave">中音区</span></div>
+        <div>音符: <span id="noteDisplay">C4</span></div>
+        <div>力度: <span id="pressure">中等</span></div>
+    </div>
+    
+    <div class="octave-marker" style="top: 100px;">低音区</div>
+    <div class="octave-marker" style="top: 300px;">中音区</div>
+    <div class="octave-marker" style="top: 500px;">高音区</div>
+    
+    <div id="controls">
+        <button class="control-btn" id="clearBtn">🗑️</button>
+        <button class="control-btn" id="volumeUp">🔊</button>
+        <button class="control-btn" id="volumeDown">🔇</button>
+    </div>
+
+    <script>
+        // 钢琴声音装置 - iPad网页版
+        // 专为钢琴家设计，支持触摸屏和Apple Pencil压力感应
+        
+        let canvas;
+        let trails = [];
+        let audioContext;
+        let pianoNotes = [];
+        let volume = 0.7;
+        let isDrawing = false;
+        
+        // 钢琴音高映射 (C大调音阶)
+        const NOTE_FREQS = {
+            'C2': 65.41, 'D2': 73.42, 'E2': 82.41, 'F2': 87.31, 'G2': 98.00, 'A2': 110.00, 'B2': 123.47,
+            'C3': 130.81, 'D3': 146.83, 'E3': 164.81, 'F3': 174.61, 'G3': 196.00, 'A3': 220.00, 'B3': 246.94,
+            'C4': 261.63, 'D4': 293.66, 'E4': 329.63, 'F4': 349.23, 'G4': 392.00, 'A4': 440.00, 'B4': 493.88,
+            'C5': 523.25, 'D5': 587.33, 'E5': 659.25, 'F5': 698.46, 'G5': 783.99, 'A5': 880.00, 'B5': 987.77,
+            'C6': 1046.50, 'D6': 1174.66, 'E6': 1318.51, 'F6': 1396.91, 'G6': 1567.98, 'A6': 1760.00, 'B6': 1975.53
+        };
+        
+        // 颜色主题 (钢琴家视角)
+        const COLOR_THEME = {
+            lowOctave: [60, 100, 200],   // 低音区 - 蓝色
+            midOctave: [180, 80, 200],   // 中音区 - 紫色
+            highOctave: [220, 100, 120],  // 高音区 - 粉色
+            background: [10, 15, 30]     // 背景色 - 深色
+        };
+        
+        function setup() {
+            // 创建适合iPad的画布
+            canvas = createCanvas(windowWidth, windowHeight);
+            canvas.elt.addEventListener('touchmove', preventDefault, {passive: false});
+            
+            // 初始化音频上下文
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // 预生成钢琴音色
+            generatePianoTones();
+            
+            // 按钮事件
+            document.getElementById('clearBtn').addEventListener('click', clearCanvas);
+            document.getElementById('volumeUp').addEventListener('click', () => {
+                volume = min(volume + 0.1, 1.0);
+            });
+            document.getElementById('volumeDown').addEventListener('click', () => {
+                volume = max(volume - 0.1, 0.2);
+            });
+        }
+        
+        function draw() {
+            // 绘制渐变背景
+            backgroundGradient();
+            
+            // 更新并绘制所有轨迹
+            for (let trail of trails) {
+                trail.update();
+                trail.draw();
+            }
+            
+            // 移除过期轨迹
+            trails = trails.filter(trail => trail.isAlive());
+        }
+        
+        // 生成钢琴音色 (模拟不同音区特性)
+        function generatePianoTones() {
+            const notes = Object.keys(NOTE_FREQS);
+            for (let note of notes) {
+                const freq = NOTE_FREQS[note];
+                pianoNotes[note] = {
+                    freq: freq,
+                    envelope: createEnvelope(),
+                    oscillator: createOscillator(freq)
+                };
+            }
+        }
+        
+        // 创建振荡器 (模拟钢琴不同音区音色)
+        function createOscillator(freq) {
+            let oscillator = audioContext.createOscillator();
+            
+            // 根据频率调整波形和泛音，模拟钢琴音色
+            if (freq < 200) { // 低音区 - 方形波+泛音
+                oscillator.type = 'square';
+            } else if (freq < 800) { // 中音区 - 正弦波+少量泛音
+                oscillator.type = 'sine';
+            } else { // 高音区 - 正弦波
+                oscillator.type = 'sine';
+            }
+            
+            oscillator.frequency.value = freq;
+            return oscillator;
+        }
+        
+        // 创建包络 (模拟钢琴音符衰减)
+        function createEnvelope() {
+            let envelope = audioContext.createGain();
+            
+            // 钢琴音符包络 - 快速衰减
+            envelope.gain.setValueAtTime(0, audioContext.currentTime);
+            
+            return envelope;
+        }
+        
+        // 演奏音符 (支持压力感应)
+        function playNote(noteName, pressure = 0.5) {
+            if (!audioContext || !pianoNotes[noteName]) return;
+            
+            // 确保音频上下文已 resume
+            if (audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+            
+            const note = pianoNotes[noteName];
+            const now = audioContext.currentTime;
+            
+            // 创建新的振荡器 (Web Audio振荡器只能启动一次)
+            const oscillator = createOscillator(note.freq);
+            const envelope = createEnvelope();
+            
+            // 连接节点
+            oscillator.connect(envelope);
+            envelope.connect(audioContext.destination);
+            
+            // 根据压力设置音量和包络
+            const noteVolume = volume * pressure;
+            
+            // 钢琴包络设置
+            envelope.gain.setValueAtTime(0, now);
+            envelope.gain.linearRampToValueAtTime(noteVolume, now + 0.02); // 快速上升
+            envelope.gain.linearRampToValueAtTime(noteVolume * 0.7, now + 0.1); // 快速衰减
+            envelope.gain.exponentialRampToValueAtTime(noteVolume * 0.01, now + 2.0); // 缓慢释放
+            
+            // 启动振荡器
+            oscillator.start(now);
+            oscillator.stop(now + 3.0); // 3秒后停止
+            
+            // 更新显示
+            document.getElementById('noteDisplay').textContent = noteName;
+        }
+        
+        // 根据Y位置确定音符 (屏幕底部=低音，顶部=高音)
+        function getNoteByY(y) {
+            const noteNames = Object.keys(NOTE_FREQS);
+            const index = constrain(floor(map(y, height, 0, 0, noteNames.length-1)), 0, noteNames.length-1);
+            return noteNames[index];
+        }
+        
+        // 根据Y位置确定音区
+        function getOctaveByY(y) {
+            const octave = floor(map(y, height, 0, 2, 6)); // 2-6 octaves
+            if (octave <= 3) return {name: "低音区", color: COLOR_THEME.lowOctave};
+            if (octave <= 5) return {name: "中音区", color: COLOR_THEME.midOctave};
+            return {name: "高音区", color: COLOR_THEME.highOctave};
+        }
+        
+        // 背景渐变
+        function backgroundGradient() {
+            for (let y = 0; y < height; y++) {
+                const ratio = y / height;
+                const r = COLOR_THEME.background[0] + ratio * 10;
+                const g = COLOR_THEME.background[1] + ratio * 10;
+                const b = COLOR_THEME.background[2] + ratio * 20;
+                stroke(r, g, b);
+                line(0, y, width, y);
+            }
+        }
+        
+        // 轨迹类 - 支持压力感应
+        class Trail {
+            constructor(startX, startY, pressure) {
+                this.points = [];
+                this.addPoint(startX, startY, pressure);
+                this.octave = getOctaveByY(startY);
+                this.note = getNoteByY(startY);
+                this.birthTime = millis();
+                this.lifeSpan = 3000; // 轨迹生命周期(毫秒)
+            }
+            
+            addPoint(x, y, pressure) {
+                this.points.push({
+                    x: x,
+                    y: y,
+                    pressure: pressure || 0.5,
+                    timestamp: millis()
+                });
+                
+                // 每隔一定点数播放一个音符
+                if (this.points.length % 5 === 0) {
+                    this.note = getNoteByY(y);
+                    this.octave = getOctaveByY(y);
+                    playNote(this.note, pressure || 0.5);
+                    
+                    // 更新音区显示
+                    document.getElementById('octave').textContent = this.octave.name;
+                    document.getElementById('pressure').textContent = 
+                        pressure > 0.7 ? "强音(forte)" : 
+                        pressure < 0.3 ? "弱音(piano)" : "中等(mezzo)";
+                }
+            }
+            
+            update() {
+                // 可以添加轨迹动画效果
+            }
+            
+            draw() {
+                if (this.points.length < 2) return;
+                
+                // 计算轨迹年龄
+                const age = millis() - this.birthTime;
+                const alpha = map(age, 0, this.lifeSpan, 255, 0);
+                
+                // 绘制轨迹线
+                strokeWeight(2);
+                beginShape();
+                for (let i = 0; i < this.points.length; i++) {
+                    const p = this.points[i];
+                    const pointAge = millis() - p.timestamp;
+                    const pointAlpha = map(pointAge, 0, 1500, alpha, 0);
+                    
+                    // 根据压力调整线条粗细和颜色亮度
+                    const weight = map(p.pressure, 0.2, 1.0, 2, 6);
+                    const color = this.octave.color;
+                    stroke(color[0], color[1], color[2], pointAlpha);
+                    strokeWeight(weight);
+                    vertex(p.x, p.y);
+                    
+                    // 绘制高光效果
+                    stroke(color[0]+50, color[1]+50, color[2]+50, pointAlpha * 0.5);
+                    strokeWeight(weight / 2);
+                    vertex(p.x, p.y);
+                }
+                endShape();
+            }
+            
+            isAlive() {
+                return millis() - this.birthTime < this.lifeSpan;
+            }
+        }
+        
+        // 触摸开始 (开始绘制)
+        function touchStarted(e) {
+            e.preventDefault();
+            isDrawing = true;
+            
+            // 获取压力值 (Apple Pencil支持)
+            const pressure = e.touches[0].force || 0.5;
+            
+            // 创建新轨迹
+            const touch = e.touches[0];
+            trails.push(new Trail(touch.clientX, touch.clientY, pressure));
+            
+            return false;
+        }
+        
+        // 触摸移动 (绘制中)
+        function touchMoved(e) {
+            if (!isDrawing) return;
+            
+            e.preventDefault();
+            const touch = e.touches[0];
+            const pressure = e.touches[0].force || 0.5;
+            
+            // 添加点到最新轨迹
+            if (trails.length > 0) {
+                trails[trails.length-1].addPoint(touch.clientX, touch.clientY, pressure);
+            }
+            
+            return false;
+        }
+        
+        // 触摸结束 (停止绘制)
+        function touchEnded(e) {
+            e.preventDefault();
+            isDrawing = false;
+            return false;
+        }
+        
+        // 背景渐变
+        function backgroundGradient() {
+            for (let y = 0; y < height; y++) {
+                const ratio = y / height;
+                const r = COLOR_THEME.background[0] + ratio * 5;
+                const g = COLOR_THEME.background[1] + ratio * 5;
+                const b = COLOR_THEME.background[2] + ratio * 15;
+                stroke(r, g, b);
+                line(0, y, width, y);
+            }
+        }
+        
+        // 清除画布
+        function clearCanvas() {
+            trails = [];
+        }
+        
+        // 防止默认触摸行为
+        function preventDefault(e) {
+            e.preventDefault();
+        }
+        
+        // 窗口大小调整
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+        }
+    </script>
+</body>
+</html>
